@@ -23,6 +23,26 @@ WRITE_CALL_COUNT = {}
 NATIVE_CACHE_BYTES_BY_LAYER = {}
 
 
+def _infer_native_page_dims(kv_cache: torch.Tensor, num_kv_heads: int):
+    """Infer (num_blocks, block_size) from vLLM native KV cache layout.
+
+    Supported layouts:
+      v0.26 fused: [num_blocks, Hkv, block_size, 2*D]
+      v0.16 split: [num_blocks, 2, block_size, Hkv, D]
+      older split: [2, num_blocks, block_size, Hkv, D]
+    """
+    if kv_cache.ndim == 4 and kv_cache.shape[1] == num_kv_heads:
+        return int(kv_cache.shape[0]), int(kv_cache.shape[2])
+    if kv_cache.ndim == 5 and kv_cache.shape[1] == 2:
+        return int(kv_cache.shape[0]), int(kv_cache.shape[2])
+    if kv_cache.ndim == 5 and kv_cache.shape[0] == 2:
+        return int(kv_cache.shape[1]), int(kv_cache.shape[2])
+    raise ValueError(
+        f"Unsupported vLLM kv_cache shape {tuple(kv_cache.shape)} "
+        f"for Hkv={num_kv_heads}"
+    )
+
+
 def apply_shadow_cache_patch(
     verbose_layer: int = 0,
 ):
@@ -70,9 +90,7 @@ def apply_shadow_cache_patch(
             num_kv_heads,
             head_dim,
         ) = key.shape
-        # vLLM Triton kv_cache: [num_blocks, Hkv, block_size, 2*D] (logical); block_size at dim 2
-        num_blocks = kv_cache.shape[0]
-        block_size = kv_cache.shape[2]
+        num_blocks, block_size = _infer_native_page_dims(kv_cache, num_kv_heads)
         if not has_layer_cache(layer_name):
             (
                 k_scale,

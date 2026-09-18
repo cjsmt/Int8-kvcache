@@ -26,6 +26,14 @@ ATTN_COMPARE_COUNT: dict[str, int] = {}
 
 ATTN_METRICS: dict[str, list[dict]] = {}
 
+# Decode steps that actually ran int8_paged_attention (int8_only / takeover).
+ATTN_INT8_HITS: dict[str, int] = {}
+
+ATTN_INT8_STATS: dict[str, int] = {
+    "last_batch": 0,
+    "max_batch": 0,
+}
+
 
 def _relative_l2(
     x: torch.Tensor,
@@ -75,6 +83,8 @@ def _is_supported_decode(
 
     Prefill / chunked-prefill (query tokens != B, or max_query_len>1)
     falls back to vLLM BF16 attention.
+
+    vLLM 0.16 may pad the query tensor; prefer ``num_actual_tokens``.
     """
     if attn_metadata is None or query.ndim != 3:
         return False
@@ -91,7 +101,10 @@ def _is_supported_decode(
         return False
 
     # One decode token per request in this step.
-    if query.shape[0] != batch:
+    num_tokens = getattr(attn_metadata, "num_actual_tokens", None)
+    if num_tokens is None:
+        num_tokens = query.shape[0]
+    if int(num_tokens) != batch:
         return False
 
     max_query_len = getattr(attn_metadata, "max_query_len", None)
@@ -110,6 +123,8 @@ def _run_int8_attention(
     shadow = get_layer_cache(layer_name)
     seq_lens = attn_metadata.seq_lens.contiguous()
     block_table = _get_block_table(attn_metadata).contiguous()
+    num_tokens = getattr(attn_metadata, "num_actual_tokens", query.shape[0])
+    query = query[: int(num_tokens)]
     return int8_paged_attention(
         query,
         shadow.key_cache,
@@ -289,11 +304,20 @@ def apply_int8_attention_patch(
                 query,
                 attn_metadata,
             )
-            if torch.isnan(int8_out).any():
-                raise RuntimeError(f"NaN in INT8 attention: {layer_name}")
-            if torch.isinf(int8_out).any():
-                raise RuntimeError(f"Inf in INT8 attention: {layer_name}")
-            output.copy_(int8_out.reshape_as(output))
+            if verbose_layer >= 0:
+                if torch.isnan(int8_out).any():
+                    raise RuntimeError(f"NaN in INT8 attention: {layer_name}")
+                if torch.isinf(int8_out).any():
+                    raise RuntimeError(f"Inf in INT8 attention: {layer_name}")
+            ATTN_INT8_HITS[layer_name] = ATTN_INT8_HITS.get(layer_name, 0) + 1
+            batch_now = int(attn_metadata.seq_lens.numel())
+            ATTN_INT8_STATS["last_batch"] = batch_now
+            ATTN_INT8_STATS["max_batch"] = max(
+                ATTN_INT8_STATS.get("max_batch", 0),
+                batch_now,
+            )
+            n = int8_out.shape[0]
+            output[:n].copy_(int8_out.reshape_as(output[:n]))
             return output
     TritonAttentionImpl.forward = patched_forward
     _PATCHED = True

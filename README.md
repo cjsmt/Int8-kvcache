@@ -1,6 +1,6 @@
 # INT8 KV Cache × PagedAttention × vLLM
 
-> 基于 Triton 实现 INT8 KV Cache Write 与 INT8 PagedAttention，并接入 vLLM 0.26.0 / Qwen2.5-7B-Instruct 的 Decode 推理路径，完成正确性、KV Cache 存储压缩、Context Sweep 与 Batch Sweep 验证。
+> 基于 Triton 实现 INT8 KV Cache Write 与 INT8 PagedAttention，并接入 vLLM（原型针对 0.26.0；本机 CUDA 12.8 上当前可跑 **0.16.0**）/ Qwen2.5-7B-Instruct 的 Decode 推理路径，完成正确性、KV Cache 存储压缩、Context Sweep 与 Batch Sweep 验证。
 
 ---
 
@@ -98,11 +98,37 @@ V4 结论：
 
 > **长上下文与大 batch 下，V4 INT8 kernel 已超过自研 BF16 baseline，并对 V3 有明显加速；短上下文仍由 occupancy 主导，默认 `impl="auto"` 自动回退 V3。**
 
-端到端 vLLM TPOT / Batch Sweep 复测：需先使用已放宽的 `_is_supported_decode`（支持任意 B 的纯 decode），命令见 `bench/benchmark_decode_tpot.py` / `bench/benchmark_batch_sweep.py`。
+端到端 vLLM Batch Sweep（V4 kernel，门控已放宽）见下一节；命令：`PYTHONPATH=. python bench/benchmark_batch_sweep.py`。
 
-### 2.4 Batch Sweep（V3 端到端，历史数据）
+### 2.4 Batch Sweep（V4 端到端，自定义算子已命中）
 
-Context=2048、生成 128 tokens 时（vLLM e2e）：
+Context 目标 2048（tokenizer 往返实际 **1973**）、生成 128 tokens。  
+环境：**torch 2.9.1+cu128 + vLLM 0.16.0**（驱动 CUDA 12.8；**无法**运行 vLLM 0.26.0，因其 `_C` 依赖 `libcudart.so.13`）。  
+INT8 路径：`int8_only` + `impl="auto"`；每条 INT8 行均校验 `int8_decode_hits=3556`（28 层）且 `int8_last_batch` 等于请求 batch。原始 JSON：`outputs/batch_sweep/`。过程、patch 改动与重跑记录见 [`docs/V4_e2e_batch_sweep.md`](docs/V4_e2e_batch_sweep.md)。
+
+| Mode | Batch | Time (s) | Throughput (tok/s) | Peak MB | INT8 hits | INT8 B |
+|---|---:|---:|---:|---:|---:|---:|
+| BF16 | 1 | 2.447 | 52.31 | 18459.63 | — | — |
+| INT8 | 1 | 3.204 | 39.95 | 20251.66 | 3556 | 1 |
+| BF16 | 2 | 2.444 | 104.74 | 18727.58 | — | — |
+| INT8 | 2 | 11.316 | 22.62 | 20519.61 | 3556 | 2 |
+| BF16 | 4 | 2.851 | 179.60 | 19263.43 | — | — |
+| INT8 | 4 | 11.805 | 43.37 | 21055.45 | 3556 | 4 |
+| BF16 | 8 | 3.731 | 274.47 | 19303.11 | — | — |
+| INT8 | 8 | 12.395 | 82.61 | 21095.13 | 3556 | 8 |
+
+相对 vLLM 原生 BF16 Triton 的 wall-clock：INT8 约为 **1.31× / 4.63× / 4.14× / 3.32×**（B=1/2/4/8）。
+
+解读：
+
+- **B>1 的 INT8 行这次真正跑进了 `int8_paged_attention`**（不再是旧门控回退 BF16）。
+- Kernel microbench 里 V4 在长 seq / 大 B 已快于自研 BF16；e2e 仍慢，主要因为 **shadow cache 双写**、Python monkey-patch 每层每步开销、以及相对 vLLM 高度优化的 Triton unified attention。Peak MB 也更高（原生 BF16 KV + INT8 shadow）。
+- 本表 **不能** 与下面 V3 历史表直接比绝对值（vLLM 0.26→0.16、`gpu_memory_utilization`、eager、prefix cache 均不同）。
+
+<details>
+<summary>V3 历史 Batch Sweep（B&gt;1 INT8 未走到自定义算子，仅作存档）</summary>
+
+当时 `_is_supported_decode` **仅允许 B=1**。B>1 的 INT8 行 decode Attention 回退为 vLLM BF16。
 
 | Mode | Batch | Time (s) | Throughput (tok/s) | Peak MB |
 |---|---:|---:|---:|---:|
@@ -115,9 +141,7 @@ Context=2048、生成 128 tokens 时（vLLM e2e）：
 | BF16 | 8 | 2.499 | 409.75 | 16094.83 |
 | INT8 | 8 | 2.800 | 365.73 | 16597.11 |
 
-> **重要更正**：该表采集时，`vllm_int8_attention_patch._is_supported_decode` **仅允许 B=1**。因此 **B>1 的 INT8 行并未走到自定义 `int8_paged_attention`**（decode Attention 回退为 vLLM BF16；INT8 侧主要仍是 shadow cache write）。**请勿把 B>1 的 INT8 吞吐解读为自定义算子结果。** B=1 的 INT8 行仍有效。Batch=2 出现 INT8 吞吐更高，更可能来自测量噪声 / 非 Attention 路径差异，不能作为算子结论。
-
-门控已放宽为「任意 batch 的纯 decode」；正式 e2e Batch Sweep 需在修复后的代码上重跑后替换本表。
+</details>
 
 ---
 
@@ -368,7 +392,24 @@ int8-kvcache/
 
 ## 6. 环境
 
-当前 V3 验证环境核心版本：
+当前可运行的端到端环境（CUDA 12.8 驱动）：
+
+```text
+vLLM: 0.16.0
+torch: 2.9.1+cu128
+GPU: NVIDIA GeForce RTX 4090
+Driver: 570.124.04 (CUDA 12.8)
+Model: Qwen2.5-7B-Instruct
+Model dtype: BF16
+KV baseline dtype: BF16
+Custom KV dtype: INT8 (shadow)
+Attention backend: TRITON_ATTN
+TP: 1
+```
+
+> vLLM 0.26.0 的预编译 `_C` 依赖 CUDA 13（`libcudart.so.13`），在本机驱动上无法 `import`。E2E 改用官方匹配 torch 2.9.1 的 **vLLM 0.16.0**（`--no-deps` 安装，避免覆盖 cu128 torch）。KV layout 为 `[num_blocks, 2, block_size, Hkv, D]`，shadow patch 已按 layout 推断 `block_size`。
+
+V3 时期曾使用：
 
 ```text
 vLLM: 0.26.0

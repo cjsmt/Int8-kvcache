@@ -100,8 +100,8 @@ Phase3  BLOCK_N + Split-KV + 复测与文档
 
 - 项目 `.venv` 原为 `torch 2.11.0+cu130`，与驱动 CUDA 12.8 不兼容 → `cuda.is_available()=False`
 - 实测阶段改用 conda `torch 2.7.0+cu128` 跑通
-- 后续将 `.venv` 调整为 `torch 2.8.0+cu128`（可用），但与 `vllm==0.26.0`（声明要 torch 2.11）仍有版本冲突
-- 因此本轮 **以 kernel microbench + 单元正确性** 作为主验收；完整 vLLM E2E TPOT 未在本轮重跑
+- 后续将 `.venv` 调整为 `torch 2.9.1+cu128`（可用）；`vllm==0.26.0` 需要 CUDA 13，本机驱动 12.8 无法加载
+- E2E 最终改用 **vLLM 0.16.0 + torch 2.9.1+cu128** 跑通 Batch Sweep（见 §4.4 / README §2.4）
 
 **Phase0 决策结论**
 
@@ -185,7 +185,8 @@ Phase3  BLOCK_N + Split-KV + 复测与文档
 > **是否受 B=1 门控影响？否。**  
 > 本表来自 `bench/bench_paged_attention.py` 直接调用 Triton wrapper，**不经过** `vllm_int8_attention_patch._is_supported_decode`。  
 > 因此表中 **B=2/4/8 行是真实算子结果**，结论成立。  
-> 受门控影响的是 README §2.4 的 **vLLM 端到端 Batch Sweep**（历史 INT8×B>1 未跑到自定义 Attention），已在该节标注更正。
+> 受门控影响的是 README §2.4 的 **V3 历史 vLLM Batch Sweep**（INT8×B>1 未跑到自定义 Attention）。  
+> **V4 e2e 已重跑**：每条 INT8 行命中 `int8_paged_attention`（`int8_decode_hits=3556`）。
 
 | B | Seq | BF16 | INT8 V3 | INT8 V4 | INT8 Auto | V4q | V4s(强制split) | V3/V4 |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -217,7 +218,7 @@ Phase3  BLOCK_N + Split-KV + 复测与文档
 | 项 | 状态 | 原因 |
 |----|------|------|
 | Nsight Compute (`ncu`) 硬件计数 | 跳过 | 机器无 `ncu` |
-| vLLM 端到端 TPOT / Batch Sweep（门控修复后） | 待重跑 | 当前环境 torch/vLLM CUDA 依赖不匹配；且旧 Batch Sweep 的 B>1 INT8 **不可信** |
+| vLLM 端到端 Batch Sweep（门控修复后） | **已完成** | 过程与重跑记录见 [`V4_e2e_batch_sweep.md`](V4_e2e_batch_sweep.md)；汇总表见 README §2.4 |
 | Native INT8 allocator | 明确不在本轮范围 | 属系统改造 |
 | INT8 MMA 默认主路径 | 仅保留实验空间 | 主路径用 bf16 `tl.dot` |
 
@@ -283,9 +284,10 @@ AssertionError: Input shapes should have M >= 16, N >= 16 and K >= 16
 1. `.venv` cu130 → CUDA 不可用  
 2. 尝试装 cu128 → 成功可用  
 3. 后台 cu124 任务把 cu128 **覆盖**成 2.6.0+cu124（仍可用，但与依赖声明更差）  
-4. 再次恢复为 **2.8.0+cu128**（当前状态）
+4. 恢复 cu128 后，`vllm==0.26.0` 仍因 `libcudart.so.13` 无法 import  
+5. **最终可用栈**：`torch 2.9.1+cu128` + `vllm==0.16.0`（`--no-deps` 安装，避免覆盖 torch）；驱动 570.124.04 / CUDA 12.8 / RTX 4090
 
-**影响**：拖慢了 E2E，但不影响 kernel 设计结论；文档与决策文件中记录了该限制。
+**影响**：E2E 数字来自 vLLM 0.16.0，不能与 V3 时期 0.26.0 表直接比绝对值。Kernel microbench 不依赖 vLLM，结论不受此影响。
 
 ### 5.7 Cache Write 的定位确认
 
@@ -300,10 +302,22 @@ Decode 每步只写 1 token，Cache Write 不是 TPOT 主因。本轮只做轻�
 | 数据 | 是否受影响 |
 |------|------------|
 | V4 kernel microbench（直接调 `int8_paged_attention`） | **否** — B>1 结论有效 |
-| V3/V4 文档中的 **e2e Batch Sweep INT8×B>1** | **是** — 未跑到自定义算子，已标注更正 |
+| V3 文档中的 **e2e Batch Sweep INT8×B>1** | **是** — 未跑到自定义算子，已降为存档 |
+| **V4 e2e Batch Sweep（2026-09-19 重跑）** | **否** — 每条 INT8 行 `int8_decode_hits=3556` 且 `int8_last_batch==B` |
 | e2e TPOT（默认 B=1） | **否** |
 
-**改动**：已放宽门控为「任意 B 的纯 decode」（`query.shape[0]==B` 且 `max_query_len==1`）。端到端 Batch Sweep 需在可用 vLLM 环境上重跑后替换历史表。
+**改动**：门控已放宽为「任意 B 的纯 decode」；vLLM 0.16 可能 pad query，改为优先用 `num_actual_tokens`。Shadow patch 用 `_infer_native_page_dims` 兼容 0.16 的 `[num_blocks,2,block_size,Hkv,D]`。
+
+**V4 e2e 结果摘要**（ctx≈1973，128 new tokens）：
+
+| B | BF16 tok/s | INT8 tok/s | INT8/BF16 time | INT8 hits |
+|--:|----------:|----------:|---------------:|----------:|
+| 1 | 52.31 | 39.95 | 1.31× | 3556 |
+| 2 | 104.74 | 22.62 | 4.63× | 3556 |
+| 4 | 179.60 | 43.37 | 4.14× | 3556 |
+| 8 | 274.47 | 82.61 | 3.32× | 3556 |
+
+E2E INT8 仍慢于 vLLM 原生 BF16：shadow 双写 + patch 开销；Peak MB 因 dual cache 更高（约 18.5→20.3–21.1 GB）。Kernel 层加速没有在这条集成路径上变成端到端加速。
 
 ---
 
@@ -407,7 +421,7 @@ int8_paged_attention(impl="auto")
 
 ```bash
 cd /root/autodl-tmp/int8-kvcache
-# 确保 CUDA 可用的 Python（当前 .venv 为 torch 2.8.0+cu128）
+# 当前 .venv：torch 2.9.1+cu128 + vLLM 0.16.0（驱动 CUDA 12.8）
 source .venv/bin/activate
 export PYTHONPATH=.
 
@@ -416,6 +430,9 @@ python -c "import tests.test_int8_paged_attention as t; t.test_int8_paged_attent
 
 # Microbench
 python bench/bench_paged_attention.py
+
+# 端到端 Batch Sweep（BF16 vs INT8，B=1/2/4/8）
+python bench/benchmark_batch_sweep.py
 
 # 可选 Nsight
 bash scripts/10_ncu_profile.sh
@@ -430,12 +447,13 @@ bash scripts/10_ncu_profile.sh
 1. V4 在 **长上下文 / 大 batch** 的 kernel 层已证明有效：相对 V3 最高约 **2×**，并可超过自研 BF16。
 2. **短上下文必须特殊处理**；默认 `auto` 是实验驱动的必要产品化改动，不是“偷懒回退”。
 3. 正确性保持在 cosine ≈ 0.999998 量级，可进入后续系统层工作。
+4. 端到端 Batch Sweep 已在 **vLLM 0.16.0** 上重跑，且 **B>1 INT8 命中自定义算子**；e2e 仍慢于原生 BF16（shadow 双写 + patch），不能把 kernel 加速直接当成系统加速。
 
 ### 9.2 建议的下一步（超出本轮 V4 算子范围）
 
-1. 解决 `.venv` 中 torch 与 `vllm==0.26.0` 的版本匹配，重跑端到端 TPOT / Batch Sweep
-2. 深化短上下文 V4（更激进 split-KV、或 group 内再并行）以减少对 V3 回退的依赖
-3. Native INT8 KV Cache allocator，兑现真实 GPU 显存减半
+1. Native INT8 KV Cache allocator，去掉 BF16 shadow，兑现真实显存减半并减少双写
+2. 降低 Python patch 热路径开销（或把 INT8 attention 编进 vLLM worker）
+3. 深化短上下文 V4（更激进 split-KV、或 group 内再并行）以减少对 V3 回退的依赖
 4. 若追求极致，再评估真正的 INT8 MMA 主路径
 
 ---

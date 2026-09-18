@@ -2,57 +2,73 @@
   {
     "mode": "bf16",
     "batch": 1,
-    "elapsed_s": 2.3675332199782133,
-    "throughput_tok_s": 54.06471128678731,
-    "peak_allocated_mb": 16090.07861328125
+    "elapsed_s": 2.4471103325486183,
+    "throughput_tok_s": 52.30659128748415,
+    "peak_allocated_mb": 18459.634765625,
+    "int8_decode_hits": null,
+    "int8_last_batch": null
   },
   {
     "mode": "int8",
     "batch": 1,
-    "elapsed_s": 3.7888499051332474,
-    "throughput_tok_s": 33.78333879802992,
-    "peak_allocated_mb": 16592.35595703125
+    "elapsed_s": 3.2043540105223656,
+    "throughput_tok_s": 39.945648820223134,
+    "peak_allocated_mb": 20251.662109375,
+    "int8_decode_hits": 3556,
+    "int8_last_batch": 1
   },
   {
     "mode": "bf16",
     "batch": 2,
-    "elapsed_s": 3.4572739023715258,
-    "throughput_tok_s": 74.04677998592942,
-    "peak_allocated_mb": 16090.75732421875
+    "elapsed_s": 2.44422060996294,
+    "throughput_tok_s": 104.73686334061372,
+    "peak_allocated_mb": 18727.583984375,
+    "int8_decode_hits": null,
+    "int8_last_batch": null
   },
   {
     "mode": "int8",
     "batch": 2,
-    "elapsed_s": 2.7054858785122633,
-    "throughput_tok_s": 94.62256004853866,
-    "peak_allocated_mb": 16593.03466796875
+    "elapsed_s": 11.316361412405968,
+    "throughput_tok_s": 22.622112414980915,
+    "peak_allocated_mb": 20519.611328125,
+    "int8_decode_hits": 3556,
+    "int8_last_batch": 2
   },
   {
     "mode": "bf16",
     "batch": 4,
-    "elapsed_s": 2.4615642316639423,
-    "throughput_tok_s": 207.99782244719393,
-    "peak_allocated_mb": 16092.11474609375
+    "elapsed_s": 2.8508228734135628,
+    "throughput_tok_s": 179.5972681343522,
+    "peak_allocated_mb": 19263.42578125,
+    "int8_decode_hits": null,
+    "int8_last_batch": null
   },
   {
     "mode": "int8",
     "batch": 4,
-    "elapsed_s": 2.7198762707412243,
-    "throughput_tok_s": 188.2438570856273,
-    "peak_allocated_mb": 16594.39208984375
+    "elapsed_s": 11.805360786616802,
+    "throughput_tok_s": 43.37012728831049,
+    "peak_allocated_mb": 21055.453125,
+    "int8_decode_hits": 3556,
+    "int8_last_batch": 4
   },
   {
     "mode": "bf16",
     "batch": 8,
-    "elapsed_s": 2.4990716073662043,
-    "throughput_tok_s": 409.7521643564281,
-    "peak_allocated_mb": 16094.82958984375
+    "elapsed_s": 3.7308774814009666,
+    "throughput_tok_s": 274.4662629916976,
+    "peak_allocated_mb": 19303.10546875,
+    "int8_decode_hits": null,
+    "int8_last_batch": null
   },
   {
     "mode": "int8",
     "batch": 8,
-    "elapsed_s": 2.79991652444005,
-    "throughput_tok_s": 365.7251889696204,
-    "peak_allocated_mb": 16597.10693359375
+    "elapsed_s": 12.39525492489338,
+    "throughput_tok_s": 82.61225817498128,
+    "peak_allocated_mb": 21095.1328125,
+    "int8_decode_hits": 3556,
+    "int8_last_batch": 8
   }
 ]

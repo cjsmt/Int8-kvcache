@@ -32,6 +32,9 @@ parser.add_argument(
 )
 args = parser.parse_args()
 os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
 MODEL = "Qwen/Qwen2.5-7B-Instruct"
 # INT8 patch
 if args.mode == "int8":
@@ -92,31 +95,47 @@ actual_context_len = len(
     )
 )
 # Engine
-max_model_len = max(
-    args.context_len + args.new_tokens + 128,
-    4096,
-)
+max_model_len = args.context_len + args.new_tokens + 64
 llm = LLM(
     model=MODEL,
     dtype="bfloat16",
     max_model_len=max_model_len,
-    gpu_memory_utilization=0.70,
+    gpu_memory_utilization=0.80,
+    max_num_seqs=16,
     enforce_eager=True,
+    enable_prefix_caching=False,
     attention_config={
         "backend": "TRITON_ATTN",
     },
 )
-# Warmup
+try:
+    backend = llm.llm_engine.vllm_config.attention_config.backend
+    print("[bench] attention backend:", backend)
+except Exception as exc:
+    print("[bench] could not read attention backend:", exc)
+# Warmup (same batch/context so Triton autotune is not billed to the timed run)
 warmup_params = SamplingParams(
     temperature=0.0,
     max_tokens=8,
     ignore_eos=True,
 )
 _ = llm.generate(
-    ["Explain KV cache briefly."],
+    prompts,
     warmup_params,
 )
 torch.cuda.synchronize()
+if args.mode == "int8":
+    from vllm_int8.vllm_int8_attention_patch import (
+        ATTN_INT8_HITS,
+        ATTN_INT8_STATS,
+    )
+    from vllm_int8.vllm_shadow_cache_patch import (
+        WRITE_CALL_COUNT,
+    )
+    ATTN_INT8_HITS.clear()
+    ATTN_INT8_STATS["last_batch"] = 0
+    ATTN_INT8_STATS["max_batch"] = 0
+    WRITE_CALL_COUNT.clear()
 # Benchmark
 params = SamplingParams(
     temperature=0.0,
@@ -152,6 +171,10 @@ peak_reserved_mb = torch.cuda.max_memory_reserved() / 1024**2
 bf16_cache_mb = None
 int8_cache_mb = None
 scale_mb = None
+int8_decode_hits = None
+int8_write_calls = None
+int8_decode_layers = None
+int8_last_batch = None
 if args.mode == "int8":
     from vllm_int8.cache_manager import (
         INT8_CACHE_POOL,
@@ -170,6 +193,27 @@ if args.mode == "int8":
     bf16_cache_mb = native_bytes / 1024**2
     int8_cache_mb = int8_bytes / 1024**2
     scale_mb = scale_bytes / 1024**2
+    from vllm_int8.vllm_int8_attention_patch import (
+        ATTN_INT8_HITS,
+        ATTN_INT8_STATS,
+    )
+    from vllm_int8.vllm_shadow_cache_patch import (
+        WRITE_CALL_COUNT,
+    )
+    int8_decode_hits = int(sum(ATTN_INT8_HITS.values()))
+    int8_write_calls = int(sum(WRITE_CALL_COUNT.values()))
+    int8_decode_layers = int(len(ATTN_INT8_HITS))
+    int8_last_batch = int(ATTN_INT8_STATS.get("max_batch", 0) or ATTN_INT8_STATS.get("last_batch", 0))
+    if int8_decode_hits <= 0:
+        raise RuntimeError(
+            "INT8 decode path was never hit; TritonAttentionImpl.forward "
+            "did not run int8_paged_attention. Check attention backend."
+        )
+    if int8_last_batch != args.batch_size:
+        raise RuntimeError(
+            f"INT8 last decode batch={int8_last_batch} != "
+            f"requested batch={args.batch_size}"
+        )
 
 # Output
 result = {
@@ -186,6 +230,10 @@ result = {
     "bf16_cache_mb": bf16_cache_mb,
     "int8_cache_mb": int8_cache_mb,
     "scale_mb": scale_mb,
+    "int8_decode_hits": int8_decode_hits,
+    "int8_write_calls": int8_write_calls,
+    "int8_decode_layers": int8_decode_layers,
+    "int8_last_batch": int8_last_batch,
     "token_ids": [list(item.outputs[0].token_ids) for item in outputs],
     "texts": [item.outputs[0].text for item in outputs],
 }

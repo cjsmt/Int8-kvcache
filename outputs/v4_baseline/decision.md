@@ -14,7 +14,9 @@
 
 ## Caveat on e2e Batch Sweep
 
-Old vLLM `int8_only` path gated INT8 attention to `batch==1`. E2E Batch Sweep INT8 numbers for B>1 (README §2.4, V3 era) did **not** exercise custom INT8 PagedAttention and must not be read as operator results. Gate fixed in `vllm_int8_attention_patch.py`; e2e re-measure still pending (torch/vLLM CUDA env).
+Old vLLM `int8_only` path gated INT8 attention to `batch==1`. That V3-era table is archived in README §2.4.
+
+V4 e2e re-measure (2026-09-19): `torch 2.9.1+cu128` + `vLLM 0.16.0` on CUDA 12.8. Every INT8 row has `int8_decode_hits=3556` and `int8_last_batch==B`. See `outputs/batch_sweep/` and README §2.4. E2E INT8 is still slower than native BF16 because of shadow dual-write + Python patch overhead; kernel wins stay in the microbench table above.
 
 ## Notes
 
