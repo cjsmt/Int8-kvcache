@@ -1,10 +1,5 @@
-"""V4 microbench: BF16 vs INT8-v3 vs INT8-v4 (+ optional quantize_q / split-KV).
-
-Writes timing + rough roofline hints to outputs/v4_baseline/.
-"""
-
+"""V4 microbench: BF16 vs INT8-v3 vs INT8-v4 (+ optional quantize_q / split-KV). Writes timing + rough roofline hints to outputs/v4_baseline/."""
 from __future__ import annotations
-
 import csv
 import json
 import math
@@ -12,14 +7,10 @@ import os
 import random
 import time
 from pathlib import Path
-
 import torch
-
 from src.triton_ops.bf16_paged_attention import bf16_paged_attention
 from src.triton_ops.int8_cache_write import int8_kv_cache_write
 from src.triton_ops.int8_paged_attention import int8_paged_attention
-
-
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "outputs" / "v4_baseline"
 
@@ -55,17 +46,14 @@ def build_cache_pair(batch_size, seq_len, hkv, head_dim, block_size, device):
     blocks_per_seq = (seq_len + block_size - 1) // block_size
     num_blocks = batch_size * blocks_per_seq * 2
     block_tables = create_block_tables(batch_size, seq_len, block_size, num_blocks, device)
-
     key = torch.randn(batch_size * seq_len, hkv, head_dim, device=device, dtype=torch.bfloat16)
     value = torch.randn_like(key)
     k_scale = (key.float().abs().amax(dim=(0, 2)) / 127).clamp_min(1e-6)
     v_scale = (value.float().abs().amax(dim=(0, 2)) / 127).clamp_min(1e-6)
-
     bf16_k = torch.zeros(num_blocks, block_size, hkv, head_dim, device=device, dtype=torch.bfloat16)
     bf16_v = torch.zeros_like(bf16_k)
     int8_k = torch.zeros(num_blocks, block_size, hkv, head_dim, device=device, dtype=torch.int8)
     int8_v = torch.zeros_like(int8_k)
-
     slots = []
     for b in range(batch_size):
         for token in range(seq_len):
@@ -75,7 +63,6 @@ def build_cache_pair(batch_size, seq_len, hkv, head_dim, block_size, device):
             slots.append(physical_block * block_size + offset)
             bf16_k[physical_block, offset] = key[b * seq_len + token]
             bf16_v[physical_block, offset] = value[b * seq_len + token]
-
     slot_mapping = torch.tensor(slots, device=device, dtype=torch.int64)
     int8_kv_cache_write(key, value, int8_k, int8_v, slot_mapping, k_scale, v_scale)
     seq_lens = torch.full((batch_size,), seq_len, device=device, dtype=torch.int32)
@@ -108,7 +95,6 @@ def run_benchmark(save=True):
     device = "cuda"
     random.seed(0)
     torch.manual_seed(0)
-
     Hq, Hkv, D, block_size = 28, 4, 128, 16
     configs = [
         (1, 512),
@@ -120,7 +106,6 @@ def run_benchmark(save=True):
         (8, 2048),
         (8, 4096),
     ]
-
     rows = []
     print("=" * 110)
     print("V4 INT8 PagedAttention Microbench (Qwen2.5-7B shape)")
@@ -130,13 +115,11 @@ def run_benchmark(save=True):
         f"{'Auto':>10}{'V4q':>10}{'V4s':>10}{'V3/V4':>10}{'bound':>22}"
     )
     print(header)
-
     for batch, seq_len in configs:
         query = torch.randn(batch, Hq, D, device=device, dtype=torch.bfloat16)
         bf16_k, bf16_v, int8_k, int8_v, block_tables, seq_lens, k_scale, v_scale = build_cache_pair(
             batch, seq_len, Hkv, D, block_size, device
         )
-
         bf16_ms = benchmark_cuda(
             lambda: bf16_paged_attention(query, bf16_k, bf16_v, block_tables, seq_lens)
         )
@@ -187,7 +170,6 @@ def run_benchmark(save=True):
         # V3 reloads KV ~q_per_kv times; V4 once
         bytes_v3 = estimate_kv_bytes(batch, seq_len, Hkv, D, 1, gqa_reload=Hq // Hkv)
         hint = roofline_hint(v3_ms, bytes_v3)
-
         row = {
             "batch": batch,
             "seq_len": seq_len,
@@ -225,7 +207,6 @@ def run_benchmark(save=True):
             else "Push tl.dot / compute path early — short-ctx compute-leaning or mixed"
         ),
     }
-
     if save:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         json_path = OUT_DIR / "microbench.json"
@@ -266,9 +247,6 @@ def run_benchmark(save=True):
             )
         print(f"\nSaved: {json_path}")
         print(f"Decision: {decision['recommendation']}")
-
     return rows, decision
-
-
 if __name__ == "__main__":
     run_benchmark(save=True)

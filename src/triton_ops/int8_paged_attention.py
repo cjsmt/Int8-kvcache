@@ -8,7 +8,6 @@ import torch
 import triton
 import triton.language as tl
 
-
 _GQA_AUTOTUNE_CONFIGS = [
     triton.Config({"NUM_BLOCKS_PER_TILE": 1}, num_warps=2, num_stages=2),
     triton.Config({"NUM_BLOCKS_PER_TILE": 1}, num_warps=4, num_stages=2),
@@ -51,11 +50,8 @@ def _choose_num_splits(batch_size: int, num_kv_heads: int, max_num_blocks: int) 
 
 
 def _auto_impl(batch_size: int, num_kv_heads: int, max_num_blocks: int) -> str:
-    """
-    Heuristic: V4 GQA-reuse wins when KV traffic dominates (long ctx / larger batch).
-    Short / tiny-batch decode prefers V3's higher program count (occupancy).
-    """
-    # Crossover ~3k–4k tokens (≈192 blocks) at B=1 on RTX 4090 microbench
+    """V4 when KV-bound (long ctx / large B); else V3 for occupancy (~192 blocks @ B=1 on 4090)."""
+    # crossover ~192 logical blocks
     work = batch_size * max_num_blocks
     if work >= 192 or max_num_blocks >= 192 or batch_size >= 8:
         return "v4"
@@ -67,6 +63,8 @@ def _auto_impl(batch_size: int, num_kv_heads: int, max_num_blocks: int) -> str:
     key=["HEAD_DIM", "CACHE_BLOCK_SIZE", "GROUP_SIZE", "max_num_blocks"],
     prune_configs_by={"early_config_prune": _prune_gqa_configs},
 )
+
+
 @triton.jit
 def _int8_paged_attention_gqa_kernel(
     query_ptr,
@@ -123,15 +121,12 @@ def _int8_paged_attention_gqa_kernel(
     batch_id = tl.program_id(0)
     kv_head_id = tl.program_id(1)
     split_id = tl.program_id(2)
-
     q_head_start = kv_head_id * GROUP_SIZE
     seq_len = tl.load(seq_lens_ptr + batch_id).to(tl.int32)
-
     offs_g = tl.arange(0, GROUP_PAD)
     offs_d = tl.arange(0, HEAD_DIM_PAD)
     g_mask = offs_g < GROUP_SIZE
     d_mask = offs_d < HEAD_DIM
-
     q_ptrs = (
         query_ptr
         + batch_id * stride_qb
@@ -139,7 +134,6 @@ def _int8_paged_attention_gqa_kernel(
         + offs_d[None, :] * stride_qd
     )
     q = tl.load(q_ptrs, mask=g_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)
-
     if QUANTIZE_Q:
         q_amax = tl.max(tl.abs(q), axis=1)
         q_scale = tl.maximum(q_amax / 127.0, 1e-6)
@@ -153,16 +147,12 @@ def _int8_paged_attention_gqa_kernel(
     else:
         q_scale = tl.full([GROUP_PAD], 1.0, dtype=tl.float32)
         q_for_dot = q
-
     k_scale = tl.maximum(tl.load(k_scale_ptr + kv_head_id).to(tl.float32), 1e-6)
     v_scale = tl.maximum(tl.load(v_scale_ptr + kv_head_id).to(tl.float32), 1e-6)
-
     m_i = tl.full([GROUP_PAD], -float("inf"), dtype=tl.float32)
     l_i = tl.zeros([GROUP_PAD], dtype=tl.float32)
     acc = tl.zeros([GROUP_PAD, HEAD_DIM_PAD], dtype=tl.float32)
-
     BLOCK_N: tl.constexpr = NUM_BLOCKS_PER_TILE * CACHE_BLOCK_SIZE
-
     if USE_SPLIT_KV:
         blocks_per_split = (max_num_blocks + NUM_SPLITS - 1) // NUM_SPLITS
         block_lo = split_id * blocks_per_split
@@ -170,27 +160,23 @@ def _int8_paged_attention_gqa_kernel(
     else:
         block_lo = 0
         block_hi = max_num_blocks
-
     q_tc = q_for_dot.to(tl.bfloat16)
 
-    # ---- Fast path: one cache page per iteration (no gather) ----
+    # NUM_BLOCKS_PER_TILE==1: one page/iter, no gather
     if NUM_BLOCKS_PER_TILE == 1:
         offs_n = tl.arange(0, CACHE_BLOCK_SIZE)
         for logical_block_id in tl.range(0, max_num_blocks):
             tile_in_split = (logical_block_id >= block_lo) & (logical_block_id < block_hi)
             page_start_token = logical_block_id * CACHE_BLOCK_SIZE
             page_valid = (page_start_token < seq_len) & tile_in_split
-
             physical_block = tl.load(
                 block_tables_ptr + batch_id * stride_btb + logical_block_id * stride_btblk,
                 mask=page_valid,
                 other=0,
             ).to(tl.int64)
-
             logical_token = page_start_token + offs_n
             valid_n = (offs_n < CACHE_BLOCK_SIZE) & (logical_token < seq_len) & page_valid
             kv_mask = valid_n[:, None] & d_mask[None, :]
-
             k_tile = tl.load(
                 key_cache_ptr
                 + physical_block * stride_kcb
@@ -209,42 +195,36 @@ def _int8_paged_attention_gqa_kernel(
                 mask=kv_mask,
                 other=0,
             ).to(tl.float32)
-
             scores = tl.dot(q_tc, tl.trans(k_tile.to(tl.bfloat16))).to(tl.float32)
             if QUANTIZE_Q:
                 scores = scores * (q_scale[:, None] * (k_scale * SM_SCALE))
             else:
                 scores = scores * (k_scale * SM_SCALE)
             scores = tl.where(valid_n[None, :] & g_mask[:, None], scores, -float("inf"))
-
             tile_max = tl.max(scores, axis=1)
             m_new = tl.maximum(m_i, tile_max)
             alpha = tl.exp(m_i - m_new)
             alpha = tl.where(m_i == -float("inf"), 0.0, alpha)
             alpha = tl.where(page_valid, alpha, 1.0)
             m_new = tl.where(page_valid, m_new, m_i)
-
             p = tl.exp(scores - m_new[:, None])
             p = tl.where(valid_n[None, :] & g_mask[:, None] & page_valid, p, 0.0)
             p_sum = tl.sum(p, axis=1)
             l_new = tl.where(page_valid, l_i * alpha + p_sum, l_i)
-
             pv = tl.dot(p.to(tl.bfloat16), v_tile.to(tl.bfloat16)).to(tl.float32)
             acc = tl.where(page_valid, acc * alpha[:, None] + pv, acc)
             m_i = m_new
             l_i = l_new
     else:
-        # ---- Multi-page tile (gather physical ids per row) ----
+        # multi-page tile: gather physical block id per token row
         offs_n = tl.arange(0, BLOCK_N)
         page_idx_n = offs_n // CACHE_BLOCK_SIZE
         in_page_n = offs_n % CACHE_BLOCK_SIZE
         block_offs = tl.arange(0, NUM_BLOCKS_PER_TILE)
-
         for logical_block_base in tl.range(0, max_num_blocks, NUM_BLOCKS_PER_TILE):
             tile_in_split = (logical_block_base >= block_lo) & (logical_block_base < block_hi)
             page_start_token = logical_block_base * CACHE_BLOCK_SIZE
             page_valid = (page_start_token < seq_len) & tile_in_split
-
             logical_ids = logical_block_base + block_offs
             valid_block = (
                 page_valid
@@ -256,7 +236,6 @@ def _int8_paged_attention_gqa_kernel(
                 mask=valid_block,
                 other=0,
             ).to(tl.int64)
-
             phys_n = tl.sum(
                 (page_idx_n[:, None] == block_offs[None, :]).to(tl.int64) * phys[None, :],
                 axis=1,
@@ -271,7 +250,6 @@ def _int8_paged_attention_gqa_kernel(
                 > 0
             )
             valid_n = (logical_token < seq_len) & row_block_ok & page_valid
-
             k_tile = tl.load(
                 key_cache_ptr
                 + phys_n[:, None] * stride_kcb
@@ -290,34 +268,28 @@ def _int8_paged_attention_gqa_kernel(
                 mask=valid_n[:, None] & d_mask[None, :],
                 other=0,
             ).to(tl.float32)
-
             scores = tl.dot(q_tc, tl.trans(k_tile.to(tl.bfloat16))).to(tl.float32)
             if QUANTIZE_Q:
                 scores = scores * (q_scale[:, None] * (k_scale * SM_SCALE))
             else:
                 scores = scores * (k_scale * SM_SCALE)
             scores = tl.where(valid_n[None, :] & g_mask[:, None], scores, -float("inf"))
-
             tile_max = tl.max(scores, axis=1)
             m_new = tl.maximum(m_i, tile_max)
             alpha = tl.exp(m_i - m_new)
             alpha = tl.where(m_i == -float("inf"), 0.0, alpha)
             alpha = tl.where(page_valid, alpha, 1.0)
             m_new = tl.where(page_valid, m_new, m_i)
-
             p = tl.exp(scores - m_new[:, None])
             p = tl.where(valid_n[None, :] & g_mask[:, None] & page_valid, p, 0.0)
             p_sum = tl.sum(p, axis=1)
             l_new = tl.where(page_valid, l_i * alpha + p_sum, l_i)
-
             pv = tl.dot(p.to(tl.bfloat16), v_tile.to(tl.bfloat16)).to(tl.float32)
             acc = tl.where(page_valid, acc * alpha[:, None] + pv, acc)
             m_i = m_new
             l_i = l_new
-
     l_safe = tl.maximum(l_i, 1e-20)
     output = (acc * v_scale) / l_safe[:, None]
-
     if USE_SPLIT_KV:
         tl.store(
             partial_out_ptr
@@ -380,14 +352,11 @@ def _merge_split_kv_kernel(
 ):
     batch_id = tl.program_id(0)
     q_head_id = tl.program_id(1)
-
     offs_d = tl.arange(0, HEAD_DIM_PAD)
     d_mask = offs_d < HEAD_DIM
-
     m = -float("inf")
     l = 0.0
     acc = tl.zeros([HEAD_DIM_PAD], dtype=tl.float32)
-
     for s in tl.static_range(0, NUM_SPLITS):
         m_s = tl.load(partial_m_ptr + batch_id * stride_pmb + q_head_id * stride_pmh + s * stride_pms)
         l_s = tl.load(partial_l_ptr + batch_id * stride_plb + q_head_id * stride_plh + s * stride_pls)
@@ -401,19 +370,16 @@ def _merge_split_kv_kernel(
             other=0.0,
         ).to(tl.float32)
 
-        # partial_out = (acc_unscaled * v_scale) / l_s  → numerator = o_s * l_s
+        # partial stores normalized out; merge uses unscaled numerator o_s * l_s
         num_s = tl.where(l_s > 0, o_s * l_s, 0.0)
-
         m_new = tl.maximum(m, m_s)
         alpha = tl.exp(m - m_new)
         alpha_s = tl.exp(m_s - m_new)
         alpha = tl.where(m == -float("inf"), 0.0, alpha)
         alpha_s = tl.where(m_s == -float("inf"), 0.0, alpha_s)
-
         acc = acc * alpha + num_s * alpha_s
         l = l * alpha + l_s * alpha_s
         m = m_new
-
     out = acc / tl.maximum(l, 1e-20)
     tl.store(
         output_ptr + batch_id * stride_ob + q_head_id * stride_oh + offs_d * stride_od,
@@ -421,10 +387,7 @@ def _merge_split_kv_kernel(
         mask=d_mask,
     )
 
-
-# ---------------------------------------------------------------------------
-# Legacy V3 per-head kernel (A/B microbench)
-# ---------------------------------------------------------------------------
+# V3 baseline: one program per Q head (microbench / short decode)
 
 
 @triton.jit
@@ -467,7 +430,6 @@ def _int8_paged_attention_kernel_v3(
     query_head_id = tl.program_id(1)
     kv_head_id = query_head_id // (NUM_Q_HEADS // NUM_KV_HEADS)
     seq_len = tl.load(seq_lens_ptr + batch_id).to(tl.int32)
-
     offs_d = tl.arange(0, HEAD_DIM_PAD)
     d_mask = offs_d < HEAD_DIM
     q = tl.load(
@@ -475,7 +437,6 @@ def _int8_paged_attention_kernel_v3(
         mask=d_mask,
         other=0.0,
     ).to(tl.float32)
-
     if QUANTIZE_Q:
         q_amax = tl.max(tl.abs(q), axis=0)
         q_scale = tl.maximum(q_amax / 127.0, 1e-6)
@@ -485,16 +446,13 @@ def _int8_paged_attention_kernel_v3(
     else:
         q_scale = 1.0
         q_for_dot = q
-
     k_scale = tl.maximum(tl.load(k_scale_ptr + kv_head_id).to(tl.float32), 1e-6)
     v_scale = tl.maximum(tl.load(v_scale_ptr + kv_head_id).to(tl.float32), 1e-6)
-
     m_i = -float("inf")
     l_i = 0.0
     acc = tl.zeros([HEAD_DIM_PAD], dtype=tl.float32)
     offs_n = tl.arange(0, CACHE_BLOCK_SIZE_PAD)
     valid_cache_offset = offs_n < CACHE_BLOCK_SIZE
-
     for logical_block_id in tl.range(0, max_num_blocks):
         page_start_token = logical_block_id * CACHE_BLOCK_SIZE
         page_valid = page_start_token < seq_len
@@ -506,7 +464,6 @@ def _int8_paged_attention_kernel_v3(
         logical_token = page_start_token + offs_n
         valid_n = valid_cache_offset & (logical_token < seq_len)
         kv_mask = valid_n[:, None] & d_mask[None, :]
-
         k_int = tl.load(
             key_cache_ptr
             + physical_block * stride_kcb
@@ -522,13 +479,11 @@ def _int8_paged_attention_kernel_v3(
         else:
             scores = scores * k_scale * SM_SCALE
         scores = tl.where(valid_n, scores, -float("inf"))
-
         tile_max = tl.max(scores, axis=0)
         m_new = tl.maximum(m_i, tile_max)
         alpha = tl.exp(m_i - m_new)
         p = tl.where(valid_n, tl.exp(scores - m_new), 0.0)
         l_new = l_i * alpha + tl.sum(p, axis=0)
-
         v_int = tl.load(
             value_cache_ptr
             + physical_block * stride_vcb
@@ -542,7 +497,6 @@ def _int8_paged_attention_kernel_v3(
         acc = acc * alpha + pv
         m_i = m_new
         l_i = l_new
-
     tl.store(
         output_ptr + batch_id * stride_ob + query_head_id * stride_oh + offs_d * stride_od,
         acc / tl.maximum(l_i, 1e-20),
@@ -633,12 +587,10 @@ def _launch_v4(
     # tl.dot on Ada requires M,N,K >= 16
     group_pad = max(16, triton.next_power_of_2(group_size))
     head_dim_pad = triton.next_power_of_2(D)
-
     if num_splits is None:
         num_splits = _choose_num_splits(B, Hkv, max_num_blocks)
     num_splits = max(1, int(num_splits))
     use_split = num_splits > 1
-
     if use_split:
         partial_out = torch.empty((B, Hq, num_splits, D), device=query.device, dtype=torch.float32)
         partial_m = torch.empty((B, Hq, num_splits), device=query.device, dtype=torch.float32)
@@ -649,7 +601,6 @@ def _launch_v4(
         partial_m = torch.empty(1, device=query.device, dtype=torch.float32)
         partial_l = torch.empty(1, device=query.device, dtype=torch.float32)
         spo, spm, spl = (0, 0, 0, 0), (0, 0, 0), (0, 0, 0)
-
     grid = (B, Hkv, num_splits)
     _int8_paged_attention_gqa_kernel[grid](
         query,
@@ -702,7 +653,6 @@ def _launch_v4(
         NUM_SPLITS=num_splits,
         USE_SPLIT_KV=use_split,
     )
-
     if use_split:
         _merge_split_kv_kernel[(B, Hq)](
             partial_out,
@@ -744,14 +694,7 @@ def int8_paged_attention(
     impl: str = "auto",
     num_splits: int | None = None,
 ):
-    """
-    Int8 Paged Decode Attention.
-
-    impl:
-      "auto" — pick v3/v4 by sequence/batch heuristic (default)
-      "v4" — GQA KV reuse + tl.dot + autotune (+ auto split-KV)
-      "v3" — legacy per-query-head baseline
-    """
+    """Paged decode on INT8 KV. impl: auto|v4 (GQA+dot+split-KV)|v3 (per Q-head)."""
     assert query.is_cuda
     assert key_cache.is_cuda and value_cache.is_cuda
     assert block_tables.is_cuda and seq_lens.is_cuda
@@ -762,7 +705,6 @@ def int8_paged_attention(
     assert key_cache.dtype == torch.int8 and value_cache.dtype == torch.int8
     assert block_tables.dtype in (torch.int32, torch.int64)
     assert seq_lens.dtype in (torch.int32, torch.int64)
-
     B, Hq, D = query.shape
     _, cache_block_size, Hkv, cache_D = key_cache.shape
     assert value_cache.shape == key_cache.shape
@@ -770,26 +712,20 @@ def int8_paged_attention(
     assert block_tables.shape[0] == B and seq_lens.numel() == B
     assert k_scale.ndim == 1 and v_scale.ndim == 1
     assert k_scale.numel() == Hkv and v_scale.numel() == Hkv
-
     if k_scale.dtype != torch.float32:
         k_scale = k_scale.float().contiguous()
     if v_scale.dtype != torch.float32:
         v_scale = v_scale.float().contiguous()
-
     assert key_cache.stride(-1) == 1 and value_cache.stride(-1) == 1
     assert int(seq_lens.min().item()) > 0
-
     max_seq_len = int(seq_lens.max().item())
     required_max_blocks = (max_seq_len + cache_block_size - 1) // cache_block_size
     assert block_tables.shape[1] >= required_max_blocks
-
     output = torch.empty((B, Hq, D), device=query.device, dtype=query.dtype)
     sm_scale = 1.0 / math.sqrt(D)
-
     selected = impl
     if selected == "auto":
         selected = _auto_impl(B, Hkv, required_max_blocks)
-
     if selected == "v3":
         _launch_v3(
             query,
@@ -830,7 +766,6 @@ def int8_paged_attention(
         )
     else:
         raise ValueError(f"Unknown impl={impl!r}; expected 'auto', 'v3' or 'v4'")
-
     return output
 
 
@@ -854,7 +789,6 @@ def torch_int8_paged_attention_reference(
     assert Hq % Hkv == 0
     q_per_kv = Hq // Hkv
     outputs = []
-
     for b in range(B):
         T = int(seq_lens[b].item())
         batch_outputs = []
@@ -866,18 +800,15 @@ def torch_int8_paged_attention_reference(
                 q_scale = torch.clamp(q_amax / 127.0, min=1e-6)
                 q8 = torch.clamp(_round_half_away_from_zero_torch(q / q_scale), -127, 127)
                 q = q8 * q_scale
-
             k_list, v_list = [], []
             for lb in range((T + block_size - 1) // block_size):
                 physical_block = int(block_tables[b, lb].item())
                 k_list.append(key_cache[physical_block, :, kvh, :].float())
                 v_list.append(value_cache[physical_block, :, kvh, :].float())
-
             k = torch.cat(k_list, dim=0)[:T] * k_scale[kvh].float()
             v = torch.cat(v_list, dim=0)[:T] * v_scale[kvh].float()
             score = torch.sum(k * q[None, :], dim=-1) / math.sqrt(D)
             p = torch.softmax(score, dim=-1)
             batch_outputs.append(torch.sum(p[:, None] * v, dim=0))
         outputs.append(torch.stack(batch_outputs, dim=0))
-
     return torch.stack(outputs, dim=0).to(query.dtype)

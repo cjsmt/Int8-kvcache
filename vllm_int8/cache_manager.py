@@ -9,10 +9,8 @@ import torch
 class LayerInt8Cache:
     key_cache: torch.Tensor
     value_cache: torch.Tensor
-
     k_scale: torch.Tensor
     v_scale: torch.Tensor
-
 
 # layer_name -> cache
 INT8_CACHE_POOL: dict[str, LayerInt8Cache] = {}
@@ -43,16 +41,13 @@ def allocate_layer_cache(
 ):
     """
     我们自己的 shadow INT8 layout：
-
         [num_blocks,
          block_size,
          Hkv,
          D]
-
     这正好和前面写好的 int8_cache_write.py /
     int8_paged_attention.py 对齐。
     """
-
     key_cache = torch.zeros(
         num_blocks,
         block_size,
@@ -61,16 +56,13 @@ def allocate_layer_cache(
         dtype=torch.int8,
         device=device,
     )
-
     value_cache = torch.zeros_like(key_cache)
-
     INT8_CACHE_POOL[layer_name] = LayerInt8Cache(
         key_cache=key_cache,
         value_cache=value_cache,
         k_scale=k_scale,
         v_scale=v_scale,
     )
-
     return INT8_CACHE_POOL[layer_name]
 
 

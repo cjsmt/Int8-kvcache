@@ -1,11 +1,8 @@
 import inspect
 import vllm
-
 print("vLLM:", vllm.__version__)
-
 try:
     import vllm.v1.attention.layer as m
-
     print("module:", inspect.getsourcefile(m))
     for name in dir(m):
         if "Attention" in name:
