@@ -1,0 +1,89 @@
+import torch
+
+from src.triton_ops.int8_cache_write import int8_kv_cache_write
+from src.triton_ops.int8_paged_attention import int8_paged_attention
+
+LAYER=14
+
+data=torch.load(
+    "outputs/kv_sample.pt",
+    map_location="cpu",
+)
+
+k=data[LAYER]["k"][0].cuda().to(torch.bfloat16)
+v=data[LAYER]["v"][0].cuda().to(torch.bfloat16)
+
+# [Hkv,T,D] -> [T,Hkv,D]
+k=k.permute(1,0,2).contiguous()
+v=v.permute(1,0,2).contiguous()
+
+T,Hkv,D=k.shape
+Hq=28
+BS=16
+
+need=(T+BS-1)//BS
+num_blocks=need+8
+
+scales=torch.load(
+    "outputs/static_per_head_scales.pt",
+    map_location="cpu",
+)
+
+ks=scales["k_scale"][LAYER].cuda()
+vs=scales["v_scale"][LAYER].cuda()
+
+physical=torch.randperm(
+    num_blocks,
+    device="cuda"
+)[:need].to(torch.int32)
+
+bt=physical[None].contiguous()
+
+slots=[]
+for t in range(T):
+    lb=t//BS
+    off=t%BS
+    pb=int(physical[lb])
+    slots.append(pb*BS+off)
+
+slots=torch.tensor(
+    slots,
+    device="cuda",
+    dtype=torch.long,
+)
+
+kc=torch.zeros(
+    num_blocks,BS,Hkv,D,
+    device="cuda",
+    dtype=torch.int8,
+)
+vc=torch.zeros_like(kc)
+
+int8_kv_cache_write(
+    k,v,kc,vc,slots,ks,vs
+)
+
+# 先用随机 q；这里的重点是真实 K/V distribution
+q=torch.randn(
+    1,Hq,D,
+    device="cuda",
+    dtype=torch.bfloat16,
+)
+
+seq_lens=torch.tensor(
+    [T],
+    device="cuda",
+    dtype=torch.int32,
+)
+
+out=int8_paged_attention(
+    q,kc,vc,
+    bt,seq_lens,
+    ks,vs,
+)
+
+torch.cuda.synchronize()
+
+print("shape:",out.shape)
+print("absmean:",out.float().abs().mean().item())
+print("nan:",torch.isnan(out).any().item())

@@ -1,0 +1,23 @@
+{
+  "mode": "int8",
+  "batch_size": 1,
+  "context_len": 494,
+  "new_tokens": 1,
+  "total_generated_tokens": 1,
+  "elapsed_s": 0.05620037019252777,
+  "overall_tokens_per_second": 17.793477099425886,
+  "avg_ms_per_generated_token": 56.20037019252777,
+  "peak_allocated_mb": 16391.59326171875,
+  "peak_reserved_mb": 17072.0,
+  "bf16_cache_mb": 1004.5,
+  "int8_cache_mb": 502.25,
+  "scale_mb": 0.0008544921875,
+  "token_ids": [
+    [
+      84648
+    ]
+  ],
+  "texts": [
+    " KV"
+  ]
+}

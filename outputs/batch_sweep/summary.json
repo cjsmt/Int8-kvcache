@@ -1,0 +1,58 @@
+[
+  {
+    "mode": "bf16",
+    "batch": 1,
+    "elapsed_s": 2.3675332199782133,
+    "throughput_tok_s": 54.06471128678731,
+    "peak_allocated_mb": 16090.07861328125
+  },
+  {
+    "mode": "int8",
+    "batch": 1,
+    "elapsed_s": 3.7888499051332474,
+    "throughput_tok_s": 33.78333879802992,
+    "peak_allocated_mb": 16592.35595703125
+  },
+  {
+    "mode": "bf16",
+    "batch": 2,
+    "elapsed_s": 3.4572739023715258,
+    "throughput_tok_s": 74.04677998592942,
+    "peak_allocated_mb": 16090.75732421875
+  },
+  {
+    "mode": "int8",
+    "batch": 2,
+    "elapsed_s": 2.7054858785122633,
+    "throughput_tok_s": 94.62256004853866,
+    "peak_allocated_mb": 16593.03466796875
+  },
+  {
+    "mode": "bf16",
+    "batch": 4,
+    "elapsed_s": 2.4615642316639423,
+    "throughput_tok_s": 207.99782244719393,
+    "peak_allocated_mb": 16092.11474609375
+  },
+  {
+    "mode": "int8",
+    "batch": 4,
+    "elapsed_s": 2.7198762707412243,
+    "throughput_tok_s": 188.2438570856273,
+    "peak_allocated_mb": 16594.39208984375
+  },
+  {
+    "mode": "bf16",
+    "batch": 8,
+    "elapsed_s": 2.4990716073662043,
+    "throughput_tok_s": 409.7521643564281,
+    "peak_allocated_mb": 16094.82958984375
+  },
+  {
+    "mode": "int8",
+    "batch": 8,
+    "elapsed_s": 2.79991652444005,
+    "throughput_tok_s": 365.7251889696204,
+    "peak_allocated_mb": 16597.10693359375
+  }
+]

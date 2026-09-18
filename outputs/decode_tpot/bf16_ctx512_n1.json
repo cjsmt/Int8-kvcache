@@ -1,0 +1,23 @@
+{
+  "mode": "bf16",
+  "batch_size": 1,
+  "context_len": 494,
+  "new_tokens": 1,
+  "total_generated_tokens": 1,
+  "elapsed_s": 0.05787482485175133,
+  "overall_tokens_per_second": 17.278670001361384,
+  "avg_ms_per_generated_token": 57.87482485175133,
+  "peak_allocated_mb": 15889.31591796875,
+  "peak_reserved_mb": 16512.0,
+  "bf16_cache_mb": null,
+  "int8_cache_mb": null,
+  "scale_mb": null,
+  "token_ids": [
+    [
+      84648
+    ]
+  ],
+  "texts": [
+    " KV"
+  ]
+}

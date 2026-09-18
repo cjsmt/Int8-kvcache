@@ -1,0 +1,23 @@
+{
+  "mode": "int8",
+  "batch_size": 1,
+  "context_len": 987,
+  "new_tokens": 1,
+  "total_generated_tokens": 1,
+  "elapsed_s": 0.10687296651303768,
+  "overall_tokens_per_second": 9.356903177923929,
+  "avg_ms_per_generated_token": 106.87296651303768,
+  "peak_allocated_mb": 16458.51416015625,
+  "peak_reserved_mb": 17072.0,
+  "bf16_cache_mb": 1004.5,
+  "int8_cache_mb": 502.25,
+  "scale_mb": 0.0008544921875,
+  "token_ids": [
+    [
+      13
+    ]
+  ],
+  "texts": [
+    "."
+  ]
+}

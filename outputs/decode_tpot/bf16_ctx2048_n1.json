@@ -1,0 +1,23 @@
+{
+  "mode": "bf16",
+  "batch_size": 1,
+  "context_len": 1973,
+  "new_tokens": 1,
+  "total_generated_tokens": 1,
+  "elapsed_s": 0.20029830746352673,
+  "overall_tokens_per_second": 4.992553420263397,
+  "avg_ms_per_generated_token": 200.29830746352673,
+  "peak_allocated_mb": 16090.07861328125,
+  "peak_reserved_mb": 16512.0,
+  "bf16_cache_mb": null,
+  "int8_cache_mb": null,
+  "scale_mb": null,
+  "token_ids": [
+    [
+      10010
+    ]
+  ],
+  "texts": [
+    " blocks"
+  ]
+}

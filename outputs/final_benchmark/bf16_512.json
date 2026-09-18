@@ -1,0 +1,14 @@
+{
+  "mode": "bf16",
+  "context_len": 512,
+  "generated_tokens": 128,
+  "elapsed_s": 2.2741195522248745,
+  "tokens_per_second": 56.28551932319116,
+  "ms_per_token": 17.766559001756832,
+  "peak_allocated_mb": 15892.75927734375,
+  "peak_reserved_mb": 16512.0,
+  "bf16_cache_mb": null,
+  "int8_cache_mb": null,
+  "scale_mb": null,
+  "output_text": " manages the cache using logical and physical memory blocks. KV Cache stores key and value tensors during autoregressive large language model inference. PagedAttention manages the cache using logical and physical memory blocks. KV Cache stores key and value tensors during autoregressive large language model inference. PagedAttention manages the cache using logical and physical memory blocks. KV Cache stores key and value tensors during autoregressive large language model inference. PagedAttention manages the cache using logical and physical memory blocks. KV Cache stores key and value tensors during autoregressive large language model inference. PagedAttention manages the cache using logical and physical memory blocks. KV Cache"
+}
