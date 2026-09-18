@@ -1,0 +1,185 @@
+{
+  "rows": [
+    {
+      "batch": 1,
+      "seq_len": 512,
+      "bf16_ms": 0.0545363187789917,
+      "int8_v3_ms": 0.13230079650878906,
+      "int8_v4_ms": 0.2961612892150879,
+      "int8_auto_ms": 0.12459839820861816,
+      "int8_v4_q_ms": 0.22568063735961913,
+      "int8_v4_split_ms": 0.1824563217163086,
+      "forced_splits": 1,
+      "speedup_v3_over_v4": 0.4467187351170169,
+      "speedup_bf16_over_v4": 0.18414398088125744,
+      "v3_est_kv_bytes": 3670016,
+      "v4_est_kv_bytes": 524288,
+      "v3_roofline": {
+        "gbps": 27.7399388125089,
+        "bw_ratio_vs_1TBs": 0.0277399388125089,
+        "bound": "compute-or-launch-leaning"
+      },
+      "device": "NVIDIA GeForce RTX 4090",
+      "ts": "2026-09-19 01:42:27"
+    },
+    {
+      "batch": 1,
+      "seq_len": 1024,
+      "bf16_ms": 0.0795136022567749,
+      "int8_v3_ms": 0.1659903907775879,
+      "int8_v4_ms": 0.2269593620300293,
+      "int8_auto_ms": 0.1683350372314453,
+      "int8_v4_q_ms": 0.22480159759521484,
+      "int8_v4_split_ms": 0.18556800842285157,
+      "forced_splits": 1,
+      "speedup_v3_over_v4": 0.7313661322136845,
+      "speedup_bf16_over_v4": 0.35034290520368283,
+      "v3_est_kv_bytes": 7340032,
+      "v4_est_kv_bytes": 1048576,
+      "v3_roofline": {
+        "gbps": 44.21961997688757,
+        "bw_ratio_vs_1TBs": 0.04421961997688757,
+        "bound": "compute-or-launch-leaning"
+      },
+      "device": "NVIDIA GeForce RTX 4090",
+      "ts": "2026-09-19 01:42:28"
+    },
+    {
+      "batch": 1,
+      "seq_len": 2048,
+      "bf16_ms": 0.15676416397094728,
+      "int8_v3_ms": 0.24031232833862304,
+      "int8_v4_ms": 0.2270956802368164,
+      "int8_auto_ms": 0.24109920501708984,
+      "int8_v4_q_ms": 0.22607872009277344,
+      "int8_v4_split_ms": 0.29647872924804686,
+      "forced_splits": 8,
+      "speedup_v3_over_v4": 1.0581985887535346,
+      "speedup_bf16_over_v4": 0.6903000700298346,
+      "v3_est_kv_bytes": 14680064,
+      "v4_est_kv_bytes": 2097152,
+      "v3_roofline": {
+        "gbps": 61.08743609405834,
+        "bw_ratio_vs_1TBs": 0.06108743609405834,
+        "bound": "compute-or-launch-leaning"
+      },
+      "device": "NVIDIA GeForce RTX 4090",
+      "ts": "2026-09-19 01:42:30"
+    },
+    {
+      "batch": 1,
+      "seq_len": 4096,
+      "bf16_ms": 0.3117875289916992,
+      "int8_v3_ms": 0.39955169677734376,
+      "int8_v4_ms": 0.26644479751586914,
+      "int8_auto_ms": 0.26590208053588865,
+      "int8_v4_q_ms": 0.3117856025695801,
+      "int8_v4_split_ms": 0.26318111419677737,
+      "forced_splits": 8,
+      "speedup_v3_over_v4": 1.499566516225737,
+      "speedup_bf16_over_v4": 1.1701768317436543,
+      "v3_est_kv_bytes": 29360128,
+      "v4_est_kv_bytes": 4194304,
+      "v3_roofline": {
+        "gbps": 73.4826763014884,
+        "bw_ratio_vs_1TBs": 0.0734826763014884,
+        "bound": "compute-or-launch-leaning"
+      },
+      "device": "NVIDIA GeForce RTX 4090",
+      "ts": "2026-09-19 01:42:31"
+    },
+    {
+      "batch": 2,
+      "seq_len": 2048,
+      "bf16_ms": 0.15731712341308593,
+      "int8_v3_ms": 0.24057567596435547,
+      "int8_v4_ms": 0.2326323127746582,
+      "int8_auto_ms": 0.22443008422851562,
+      "int8_v4_q_ms": 0.2245427131652832,
+      "int8_v4_split_ms": 0.20142080307006835,
+      "forced_splits": 1,
+      "speedup_v3_over_v4": 1.03414557115886,
+      "speedup_bf16_over_v4": 0.6762479448221488,
+      "v3_est_kv_bytes": 29360128,
+      "v4_est_kv_bytes": 4194304,
+      "v3_roofline": {
+        "gbps": 122.04113272178895,
+        "bw_ratio_vs_1TBs": 0.12204113272178896,
+        "bound": "mixed"
+      },
+      "device": "NVIDIA GeForce RTX 4090",
+      "ts": "2026-09-19 01:42:31"
+    },
+    {
+      "batch": 4,
+      "seq_len": 2048,
+      "bf16_ms": 0.1579212760925293,
+      "int8_v3_ms": 0.26010431289672853,
+      "int8_v4_ms": 0.2271116828918457,
+      "int8_auto_ms": 0.22623231887817383,
+      "int8_v4_q_ms": 0.22918912887573242,
+      "int8_v4_split_ms": 0.20313087463378907,
+      "forced_splits": 1,
+      "speedup_v3_over_v4": 1.1452705100186082,
+      "speedup_bf16_over_v4": 0.6953463339344546,
+      "v3_est_kv_bytes": 58720256,
+      "v4_est_kv_bytes": 8388608,
+      "v3_roofline": {
+        "gbps": 225.75656414937728,
+        "bw_ratio_vs_1TBs": 0.22575656414937728,
+        "bound": "mixed"
+      },
+      "device": "NVIDIA GeForce RTX 4090",
+      "ts": "2026-09-19 01:42:32"
+    },
+    {
+      "batch": 8,
+      "seq_len": 2048,
+      "bf16_ms": 0.20718368530273437,
+      "int8_v3_ms": 0.2733465576171875,
+      "int8_v4_ms": 0.22586368560791015,
+      "int8_auto_ms": 0.2262544059753418,
+      "int8_v4_q_ms": 0.22553600311279298,
+      "int8_v4_split_ms": 0.2024140739440918,
+      "forced_splits": 1,
+      "speedup_v3_over_v4": 1.2102280049202139,
+      "speedup_bf16_over_v4": 0.9172952471093406,
+      "v3_est_kv_bytes": 117440512,
+      "v4_est_kv_bytes": 16777216,
+      "v3_roofline": {
+        "gbps": 429.63962313537314,
+        "bw_ratio_vs_1TBs": 0.4296396231353731,
+        "bound": "memory-leaning"
+      },
+      "device": "NVIDIA GeForce RTX 4090",
+      "ts": "2026-09-19 01:42:33"
+    },
+    {
+      "batch": 8,
+      "seq_len": 4096,
+      "bf16_ms": 0.4629401779174805,
+      "int8_v3_ms": 0.5252505493164062,
+      "int8_v4_ms": 0.26610944747924803,
+      "int8_auto_ms": 0.25823232650756833,
+      "int8_v4_q_ms": 0.2582627105712891,
+      "int8_v4_split_ms": 0.2504294395446777,
+      "forced_splits": 1,
+      "speedup_v3_over_v4": 1.9738139862823427,
+      "speedup_bf16_over_v4": 1.7396608136341416,
+      "v3_est_kv_bytes": 234881024,
+      "v4_est_kv_bytes": 33554432,
+      "v3_roofline": {
+        "gbps": 447.17901638692007,
+        "bw_ratio_vs_1TBs": 0.4471790163869201,
+        "bound": "memory-leaning"
+      },
+      "device": "NVIDIA GeForce RTX 4090",
+      "ts": "2026-09-19 01:42:34"
+    }
+  ],
+  "decision": {
+    "long_ctx_v3_bound": "compute-or-launch-leaning",
+    "short_ctx_v3_bound": "compute-or-launch-leaning",
+    "recommendation": "Push tl.dot / compute path early \u2014 short-ctx compute-leaning or mixed"
+  }
+}

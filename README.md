@@ -68,7 +68,7 @@ Reduction     : ≈ 50.00%
 
 ### 2.3 Decode TPOT
 
-当前 correctness-first INT8 PagedAttention 尚未超过 vLLM 原生高度优化的 BF16 Triton backend：
+#### V3（correctness-first）
 
 | Context | BF16 TPOT (ms) | INT8 TPOT (ms) | BF16 Decode tok/s | INT8 Decode tok/s |
 |---:|---:|---:|---:|---:|
@@ -77,11 +77,23 @@ Reduction     : ≈ 50.00%
 | 2048 | 16.414 | 28.735 | 60.92 | 34.80 |
 | 4096 | 16.578 | 33.596 | 60.32 | 29.77 |
 
-因此 V3 的结论不是“INT8 已经更快”，而是：
+#### V4 Kernel Microbench（RTX 4090，Qwen2.5-7B 形状）
 
-> **INT8 KV Cache 在存储压缩与正确性方面达到目标，但第一版 correctness-first INT8 PagedAttention Kernel 在性能上仍落后于 vLLM 原生 BF16 Triton backend。**
+单次 Attention kernel 延迟（ms），见 `outputs/v4_baseline/microbench.csv`：
 
-这为后续 V4 的 Kernel Profiling / Optimization 提供了明确目标。
+| B | Seq | BF16 | INT8 V3 | INT8 V4 | INT8 Auto | V3/V4 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 512 | 0.055 | 0.132 | 0.296 | 0.125 | 0.45× |
+| 1 | 1024 | 0.080 | 0.166 | 0.227 | 0.168 | 0.73× |
+| 1 | 2048 | 0.157 | 0.240 | 0.227 | 0.241 | 1.06× |
+| 1 | 4096 | 0.312 | 0.400 | 0.266 | **0.266** | **1.50×** |
+| 8 | 4096 | 0.463 | 0.525 | 0.266 | **0.258** | **1.97×** |
+
+V4 结论：
+
+> **长上下文与大 batch 下，V4 INT8 kernel 已超过自研 BF16 baseline，并对 V3 有明显加速；短上下文仍由 occupancy 主导，默认 `impl="auto"` 自动回退 V3。**
+
+端到端 vLLM TPOT 复测命令：`bench/benchmark_decode_tpot.py`（需可用的 CUDA PyTorch + vLLM 环境）。
 
 ### 2.4 Batch Sweep
 
@@ -850,7 +862,7 @@ memory coalescing
 
 因此本项目当前最准确的结论是：
 
-> V3 已证明 Static Per-Head INT8 KV Cache 在 Qwen2.5-7B/vLLM Runtime 中具有良好的数值正确性和约 50% 的 KV payload 压缩能力；第一版 correctness-first INT8 PagedAttention 的性能仍低于 vLLM 原生 BF16 backend，后续将以 Kernel Profiling 和计算/访存优化作为 V4 的核心方向。
+> V3 已证明 Static Per-Head INT8 KV Cache 在 Qwen2.5-7B/vLLM Runtime 中具有良好的数值正确性和约 50% 的 KV payload 压缩能力；V4 通过 GQA reuse / `tl.dot` / split-KV / autotune，在长上下文与大 batch 的 kernel microbench 上已超过自研 BF16 baseline（见 §2.3），默认 `impl="auto"` 在短上下文回退 V3 以保证 occupancy。
 
 ---
 
@@ -953,21 +965,20 @@ int8_only Decode 正常运行
 当前最主要的不足是：
 
 ```text
-INT8 PagedAttention performance
-<
-vLLM native BF16 Triton Attention
+短上下文 / 小 batch：
+  V4 GQA grid 并行度不足，需 auto→V3 或更强 split-KV
+
+端到端：
+  仍可能落后于 vLLM 高度优化的 native BF16 backend
+  （kernel 层长上下文已可超过自研 BF16）
 ```
 
-因此项目下一阶段 V4 将重点从：
+因此项目下一阶段可将重点从纯算子优化转向：
 
 ```text
-Correctness + Integration
-```
-
-转向：
-
-```text
-Profiling + Kernel Performance Optimization
+Native INT8 KV allocator
++
+与 vLLM quantized backend 对齐 / 生产化接入
 ```
 
 ---
@@ -982,21 +993,29 @@ Profiling + Kernel Performance Optimization
 
 ---
 
-## 26. 后续工作：V4
+## 26. 后续工作：V4 → 已完成核心项
 
 ```text
 V4 — INT8 PagedAttention Kernel Performance Optimization
 
-1. Kernel profiling
-2. GQA-aware KV reuse
-3. 减少 INT8→FP32 dequant overhead
-4. Vectorized/coalesced KV load
-5. BLOCK_N / num_warps / num_stages autotune
-6. Register / occupancy 分析
-7. INT8 Q quantization
-8. INT8 Tensor Core dot / MMA
-9. 与 vLLM native quantized KV backend 对比
-10. Native INT8 KV Cache allocator
+[x] Kernel profiling / microbench（bench/bench_paged_attention.py → outputs/v4_baseline/）
+[x] GQA-aware KV reuse（grid = B × Hkv）
+[x] 减少 INT8→FP 路径开销（V scale 延后到最终归一化）
+[x] Vectorized/coalesced KV load + 单 page 快路径
+[x] BLOCK_N / num_warps / num_stages autotune
+[x] Split-KV（小 batch / 长上下文）
+[x] tl.dot Tensor-Core 友好 QK/PV（bf16）
+[x] 可选 Query INT8（quantize_q=True）
+[x] impl="auto" 短上下文回退 V3 / 长上下文走 V4
+[ ] 与 vLLM native quantized KV backend 对比（环境相关）
+[ ] Native INT8 KV Cache allocator（显存真实减半，属系统改造）
 ```
 
-V3 到此结束。
+复现 V4 microbench：
+
+```bash
+PYTHONPATH=. python bench/bench_paged_attention.py
+# optional: bash scripts/10_ncu_profile.sh
+```
+
+V3 到此结束；V4 算子优化主线已合入 `src/triton_ops/int8_paged_attention.py`。

@@ -253,6 +253,7 @@ def int8_kv_cache_write(
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
     num_warps: int = 4,
+    num_stages: int = 2,
 ):
     """
     将 BF16 / FP16 K,V 使用 Static Per-Head Scale
@@ -479,7 +480,7 @@ def int8_kv_cache_write(
         HEAD_DIM=head_dim,
         HEAD_DIM_PAD=head_dim_pad,
         num_warps=num_warps,
-        num_stages=1,
+        num_stages=num_stages,
     )
 
 

@@ -557,3 +557,61 @@ def test_int8_paged_attention_correctness():
     print("INT8 vs BF16 relative L2:", quant_rel_l2)
 
     assert quant_cos > 0.98
+
+
+@pytest.mark.cuda
+def test_int8_paged_attention_v4_matches_reference():
+    """V4 GQA kernel vs torch reference and vs V3."""
+    torch.manual_seed(1)
+    random.seed(1)
+    device = "cuda"
+    B, Hq, Hkv, D, block_size = 2, 28, 4, 128, 16
+    seq_lens_list = [97, 256]
+    query = torch.randn(B, Hq, D, device=device, dtype=torch.bfloat16)
+    keys, values = [], []
+    for T in seq_lens_list:
+        keys.append(torch.randn(T, Hkv, D, device=device, dtype=torch.bfloat16))
+        values.append(torch.randn_like(keys[-1]))
+
+    all_k = torch.cat(keys, dim=0).float()
+    all_v = torch.cat(values, dim=0).float()
+    k_scale = (all_k.abs().amax(dim=(0, 2)) / 127).clamp_min(1e-6)
+    v_scale = (all_v.abs().amax(dim=(0, 2)) / 127).clamp_min(1e-6)
+
+    num_blocks = 512
+    block_tables = create_random_block_tables(B, seq_lens_list, block_size, num_blocks, device)
+    seq_lens = torch.tensor(seq_lens_list, device=device, dtype=torch.int32)
+    slot_mapping = build_slot_mapping(block_tables, seq_lens_list, block_size)
+
+    key_cache = torch.zeros(num_blocks, block_size, Hkv, D, device=device, dtype=torch.int8)
+    value_cache = torch.zeros_like(key_cache)
+    int8_kv_cache_write(
+        torch.cat(keys, 0),
+        torch.cat(values, 0),
+        key_cache,
+        value_cache,
+        slot_mapping,
+        k_scale,
+        v_scale,
+    )
+
+    out_ref = torch_int8_paged_attention_reference(
+        query, key_cache, value_cache, block_tables, seq_lens, k_scale, v_scale
+    )
+    out_v3 = int8_paged_attention(
+        query, key_cache, value_cache, block_tables, seq_lens, k_scale, v_scale, impl="v3"
+    )
+    out_v4 = int8_paged_attention(
+        query, key_cache, value_cache, block_tables, seq_lens, k_scale, v_scale, impl="v4", num_splits=1
+    )
+    out_v4s = int8_paged_attention(
+        query, key_cache, value_cache, block_tables, seq_lens, k_scale, v_scale, impl="v4", num_splits=4
+    )
+
+    for name, out in [("v3", out_v3), ("v4", out_v4), ("v4-split", out_v4s)]:
+        cos = F.cosine_similarity(out.reshape(-1).float(), out_ref.reshape(-1).float(), dim=0).item()
+        rel = ((out.float() - out_ref.float()).norm() / out_ref.float().norm()).item()
+        print(f"{name}: cosine={cos:.6f} rel_l2={rel:.6f}")
+        # bf16 tl.dot path may be slightly looser than pure fp32 v3
+        assert cos > 0.995, name
+        assert rel < 0.05, name
