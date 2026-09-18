@@ -54,37 +54,50 @@ def _mae(
     return (x.float() - y.float()).abs().mean().item()
 
 
+def _get_block_table(attn_metadata):
+    """vLLM Triton metadata uses block_table; some wrappers use block_tables."""
+    bt = getattr(attn_metadata, "block_table", None)
+    if bt is None:
+        bt = getattr(attn_metadata, "block_tables", None)
+    return bt
+
+
 def _is_supported_decode(
     query,
     attn_metadata,
 ) -> bool:
-    """MVP decode only: B=1, query [1,Hq,D], valid seq_lens/block_table; else vLLM fallback."""
-    if attn_metadata is None:
+    """True for pure decode steps (any batch size).
+
+    Decode means one new query token per sequence:
+      query: [B, Hq, D]  (vLLM decode also passes num_tokens==B)
+      seq_lens: [B]
+      block_table: [B, max_blocks]
+
+    Prefill / chunked-prefill (query tokens != B, or max_query_len>1)
+    falls back to vLLM BF16 attention.
+    """
+    if attn_metadata is None or query.ndim != 3:
         return False
-    if query.ndim != 3:
-        return False
-    if query.shape[0] != 1:
-        return False
-    seq_lens = getattr(
-        attn_metadata,
-        "seq_lens",
-        None,
-    )
-    block_table = getattr(
-        attn_metadata,
-        "block_table",
-        None,
-    )
-    if seq_lens is None:
-        return False
-    if block_table is None:
-        return False
-    if seq_lens.numel() != 1:
+
+    seq_lens = getattr(attn_metadata, "seq_lens", None)
+    block_table = _get_block_table(attn_metadata)
+    if seq_lens is None or block_table is None:
         return False
     if block_table.ndim != 2:
         return False
-    if block_table.shape[0] != 1:
+
+    batch = int(seq_lens.numel())
+    if batch <= 0 or block_table.shape[0] != batch:
         return False
+
+    # One decode token per request in this step.
+    if query.shape[0] != batch:
+        return False
+
+    max_query_len = getattr(attn_metadata, "max_query_len", None)
+    if max_query_len is not None and int(max_query_len) != 1:
+        return False
+
     return True
 
 
@@ -96,7 +109,7 @@ def _run_int8_attention(
     layer_name = layer.layer_name
     shadow = get_layer_cache(layer_name)
     seq_lens = attn_metadata.seq_lens.contiguous()
-    block_table = attn_metadata.block_table.contiguous()
+    block_table = _get_block_table(attn_metadata).contiguous()
     return int8_paged_attention(
         query,
         shadow.key_cache,
@@ -220,7 +233,9 @@ def apply_int8_attention_patch(
                     "cosine": cosine,
                     "rel_l2": rel_l2,
                     "mae": mae,
-                    "seq_len": int(attn_metadata.seq_lens[0].item()),
+                    "batch": int(attn_metadata.seq_lens.numel()),
+                    "seq_lens": [int(x) for x in attn_metadata.seq_lens.tolist()],
+                    "max_seq_len": int(attn_metadata.seq_lens.max().item()),
                 }
             )
             if f"layers.{verbose_layer}." in layer_name and count < max_compare_calls:
@@ -241,9 +256,10 @@ def apply_int8_attention_patch(
                     "seq_lens:",
                     attn_metadata.seq_lens.tolist(),
                 )
+                bt = _get_block_table(attn_metadata)
                 print(
                     "block_table:",
-                    tuple(attn_metadata.block_table.shape),
+                    tuple(bt.shape) if bt is not None else None,
                 )
                 print(
                     "cosine      :",

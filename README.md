@@ -79,25 +79,30 @@ Reduction     : ≈ 50.00%
 
 #### V4 Kernel Microbench（RTX 4090，Qwen2.5-7B 形状）
 
-单次 Attention kernel 延迟（ms），见 `outputs/v4_baseline/microbench.csv`：
+单次 Attention kernel 延迟（ms），见 `outputs/v4_baseline/microbench.csv`。
+
+> **数据来源说明**：本表由 `bench/bench_paged_attention.py` **直接调用** `int8_paged_attention` 得到，**不经过** vLLM attention patch。因此 **B>1 行对算子本身有效**，与历史上 `_is_supported_decode` 仅允许 B=1 的 e2e 门控无关。
 
 | B | Seq | BF16 | INT8 V3 | INT8 V4 | INT8 Auto | V3/V4 |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1 | 512 | 0.055 | 0.132 | 0.296 | 0.125 | 0.45× |
-| 1 | 1024 | 0.080 | 0.166 | 0.227 | 0.168 | 0.73× |
-| 1 | 2048 | 0.157 | 0.240 | 0.227 | 0.241 | 1.06× |
-| 1 | 4096 | 0.312 | 0.400 | 0.266 | **0.266** | **1.50×** |
-| 8 | 4096 | 0.463 | 0.525 | 0.266 | **0.258** | **1.97×** |
+| 1 | 512 | 0.056 | 0.136 | 0.226 | **0.128** | 0.60× |
+| 1 | 1024 | 0.080 | 0.167 | 0.228 | **0.167** | 0.74× |
+| 1 | 2048 | 0.157 | 0.241 | 0.229 | 0.243 | 1.05× |
+| 1 | 4096 | 0.342 | 0.414 | **0.270** | **0.270** | **1.53×** |
+| 2 | 2048 | 0.160 | 0.241 | 0.227 | 0.227 | 1.06× |
+| 4 | 2048 | 0.172 | 0.254 | 0.295 | **0.228** | 0.86× |
+| 8 | 2048 | 0.232 | 0.339 | **0.227** | **0.227** | **1.49×** |
+| 8 | 4096 | 0.464 | 0.519 | **0.266** | **0.261** | **1.95×** |
 
 V4 结论：
 
 > **长上下文与大 batch 下，V4 INT8 kernel 已超过自研 BF16 baseline，并对 V3 有明显加速；短上下文仍由 occupancy 主导，默认 `impl="auto"` 自动回退 V3。**
 
-端到端 vLLM TPOT 复测命令：`bench/benchmark_decode_tpot.py`（需可用的 CUDA PyTorch + vLLM 环境）。
+端到端 vLLM TPOT / Batch Sweep 复测：需先使用已放宽的 `_is_supported_decode`（支持任意 B 的纯 decode），命令见 `bench/benchmark_decode_tpot.py` / `bench/benchmark_batch_sweep.py`。
 
-### 2.4 Batch Sweep
+### 2.4 Batch Sweep（V3 端到端，历史数据）
 
-Context=2048、生成 128 tokens 时：
+Context=2048、生成 128 tokens 时（vLLM e2e）：
 
 | Mode | Batch | Time (s) | Throughput (tok/s) | Peak MB |
 |---|---:|---:|---:|---:|
@@ -110,7 +115,9 @@ Context=2048、生成 128 tokens 时：
 | BF16 | 8 | 2.499 | 409.75 | 16094.83 |
 | INT8 | 8 | 2.800 | 365.73 | 16597.11 |
 
-Batch=2 的单次结果出现 INT8 throughput 更高，但该点不作为最终性能结论；如需正式发布性能数据，应进行多轮重复并取 median / percentile。
+> **重要更正**：该表采集时，`vllm_int8_attention_patch._is_supported_decode` **仅允许 B=1**。因此 **B>1 的 INT8 行并未走到自定义 `int8_paged_attention`**（decode Attention 回退为 vLLM BF16；INT8 侧主要仍是 shadow cache write）。**请勿把 B>1 的 INT8 吞吐解读为自定义算子结果。** B=1 的 INT8 行仍有效。Batch=2 出现 INT8 吞吐更高，更可能来自测量噪声 / 非 Attention 路径差异，不能作为算子结论。
+
+门控已放宽为「任意 batch 的纯 decode」；正式 e2e Batch Sweep 需在修复后的代码上重跑后替换本表。
 
 ---
 
